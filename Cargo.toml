@@ -1,0 +1,10 @@
+[package]
+name = "fnconcat"
+version = "0.1.0"
+authors = ["Aaron Gallagher <_@habnab.it>"]
+
+[lib]
+name = "fnconcat"
+path = "src/lib.rs"
+crate-type = ["dylib"]
+plugin = true
