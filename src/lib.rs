@@ -58,12 +58,12 @@ fn fnconcat(cx: &mut ExtCtxt, sp: Span, args: &[TokenTree])
             Ok(()) => (),
             Err(err_span) => {
                 cx.span_err(err_span, "non-ident, non-comma token");
-                return DummyResult::any(sp);
+                return DummyResult::any(err_span);
             },
         }
         if concatenated.is_empty() {
             cx.span_err(delim_span, "empty identifier");
-            return DummyResult::any(sp);
+            return DummyResult::any(delim_span);
         }
         ident_of_ctx_and_span(cx, delim_span, concatenated.as_str())
     } else {
