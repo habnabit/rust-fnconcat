@@ -72,3 +72,13 @@ fn test_ident_built_partially_from_macro() {
 fnconcat!{[test_, annotations]() {
 
 }}
+
+
+parametrize_test!{test_addition, [
+    (a: u32, b: u32, r: u32),
+    (1, 1, 2),
+    (1, 2, 3),
+    (2, 2, 4),
+], {
+    assert_eq!(a + b, r);
+}}
