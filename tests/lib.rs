@@ -82,3 +82,13 @@ parametrize_test!{test_addition, [
 ], {
     assert_eq!(a + b, r);
 }}
+
+
+parametrize_test!{[test_, subtraction], [
+    (a: u32, b: u32, r: u32),
+    (1, 1, 0),
+    (2, 1, 1),
+    (5, 3, 2),
+], {
+    assert_eq!(a - b, r);
+}}

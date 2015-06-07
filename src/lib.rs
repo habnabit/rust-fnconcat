@@ -7,7 +7,7 @@ use std::rc::Rc;
 
 use syntax::codemap::Span;
 use syntax::parse::{PResult, token};
-use syntax::ast::{Delimited, Ident, TokenTree, TtDelimited, TtToken};
+use syntax::ast::{Delimited, TokenTree, TtDelimited, TtToken};
 use syntax::ext::base::{ExtCtxt, MacResult, DummyResult, MacEager};
 use syntax::ext::quote::rt::ToTokens;
 use syntax::util::small_vector::SmallVector;
@@ -160,7 +160,7 @@ fn test_fn_of_ident_and_block(cx: &mut ExtCtxt, span: Span, ident: String, block
     ]
 }
 
-fn do_parametrization(cx: &mut ExtCtxt, span: Span, base_name: Ident, params: &Delimited, block: Vec<TokenTree>)
+fn do_parametrization(cx: &mut ExtCtxt, span: Span, base_name: String, params: &Delimited, block: Vec<TokenTree>)
                       -> PResult<Box<MacResult + 'static>> {
     let mut tokens = Vec::new();
     let mut groups = try!(pull_tts_from_paren_groups(&params.tts[..]));
@@ -172,7 +172,7 @@ fn do_parametrization(cx: &mut ExtCtxt, span: Span, base_name: Ident, params: &D
             fn_block.extend(let_of_pat_and_expr(cx, span, pat, expr).into_iter());
         }
         fn_block.extend(block.iter().cloned());
-        let fn_name = format!("{}_{}", base_name.as_str(), e);
+        let fn_name = format!("{}_{}", base_name, e);
         tokens.extend(test_fn_of_ident_and_block(cx, span, fn_name, fn_block).into_iter());
     }
     let mut parser = cx.new_parser_from_tts(&tokens[..]);
@@ -189,7 +189,7 @@ fn do_parametrization(cx: &mut ExtCtxt, span: Span, base_name: Ident, params: &D
 fn parametrize_test(cx: &mut ExtCtxt, sp: Span, args: &[TokenTree])
                     -> Box<MacResult + 'static> {
     match args {
-        [TtToken(_, token::Ident(ref name, _)),
+        [ref name,
          TtToken(_, token::Comma),
          TtDelimited(params_span, ref params),
          TtToken(_, token::Comma),
@@ -206,7 +206,20 @@ fn parametrize_test(cx: &mut ExtCtxt, sp: Span, args: &[TokenTree])
                 cx.span_err(params_span, "need at least param types and one param");
                 return DummyResult::any(params_span);
             }
-            match do_parametrization(cx, sp, name.clone(), params, block.tts.clone()) {
+            let mut concatenated = String::new();
+            match build_string_from_idents(&mut concatenated, &[name.clone()]) {
+                Ok(()) => (),
+                Err(err_span) => {
+                    cx.span_err(err_span, "non-ident, non-comma token");
+                    return DummyResult::any(err_span);
+                },
+            }
+            if concatenated.is_empty() {
+                let name_span = name.get_span();
+                cx.span_err(name_span, "empty identifier");
+                return DummyResult::any(name_span);
+            }
+            match do_parametrization(cx, sp, concatenated, params, block.tts.clone()) {
                 Ok(r) => return r,
                 Err(_) => {
                     cx.span_err(sp, "error while parsing");
