@@ -118,14 +118,6 @@ fn parse_exprs(cx: &mut ExtCtxt, tts: Vec<TokenTree>) -> PResult<Vec<P<ast::Expr
     Ok(ret)
 }
 
-fn try_mapping_parse_exprs(cx: &mut ExtCtxt, tts_vec: Vec<Vec<TokenTree>>) -> PResult<Vec<Vec<P<ast::Expr>>>> {
-    let mut ret = Vec::new();
-    for tts in tts_vec {
-        ret.push(try!(parse_exprs(cx, tts)));
-    }
-    Ok(ret)
-}
-
 fn let_of_pat_type_and_expr(pat: P<ast::Pat>, ty: P<ast::Ty>, expr: P<ast::Expr>, span: Span) -> P<ast::Stmt> {
     let id = pat.id;
     let local = ast::Local {
@@ -195,7 +187,7 @@ fn do_parametrization(cx: &mut ExtCtxt, sp: Span, base_name: ast::Ident,
     let mut items = Vec::new();
     let mut groups = try!(pull_tts_from_paren_groups(&params.tts[..]));
     let param_types = try!(parse_pats_and_types(cx, groups.remove(0)));
-    let param_exprs_vec = try!(try_mapping_parse_exprs(cx, groups));
+    let param_exprs_vec: Vec<Vec<P<ast::Expr>>> = try!(groups.into_iter().map(|tts| parse_exprs(cx, tts)).collect());
     let block = try!(cx.new_parser_from_tts(&vec![whole_block][..]).parse_block());
     for (e, exprs) in param_exprs_vec.into_iter().enumerate() {
         let mut new_stmts = Vec::new();
