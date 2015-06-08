@@ -80,12 +80,12 @@ fn fnconcat(cx: &mut ExtCtxt, sp: Span, args: &[TokenTree])
 }
 
 
-fn pull_tts_from_paren_groups(tts: &[TokenTree]) -> PResult<Vec<Vec<TokenTree>>> {
+fn pull_tts_from_paren_groups(tts: &[TokenTree]) -> PResult<Vec<(Span, Vec<TokenTree>)>> {
     let mut ret = Vec::new();
     for t in tts {
         match t {
-            &TtDelimited(_, ref delim) if delim.delim == token::DelimToken::Paren => {
-                ret.push(tt_vec(&delim.tts[..]));
+            &TtDelimited(delim_span, ref delim) if delim.delim == token::DelimToken::Paren => {
+                ret.push((delim_span, tt_vec(&delim.tts[..])));
             },
             _ => {
 
@@ -164,15 +164,21 @@ fn do_parametrization(cx: &mut ExtCtxt, span: Span, base_name: String, params: &
                       -> PResult<Box<MacResult + 'static>> {
     let mut tokens = Vec::new();
     let mut groups = try!(pull_tts_from_paren_groups(&params.tts[..]));
-    let param_types = try!(parse_pats_and_types(cx, span, groups.remove(0)));
-    let param_exprs_vec: Vec<Vec<Vec<TokenTree>>> = try!(groups.into_iter().map(|tts| parse_exprs(cx, tts)).collect());
-    for (e, exprs) in param_exprs_vec.into_iter().enumerate() {
+    let param_types = try!(parse_pats_and_types(cx, span, groups.remove(0).1));
+    let param_exprs_vec: Vec<(Span, Vec<Vec<TokenTree>>)> =
+        try!(groups.into_iter().map(|(span, tts)| parse_exprs(cx, tts).map(|parsed| (span, parsed))).collect());
+    let codemap = cx.codemap();
+    for (e, (exprs_span, exprs)) in param_exprs_vec.into_iter().enumerate() {
         let mut fn_block = Vec::new();
         for (pat, expr) in param_types.iter().cloned().zip(exprs.into_iter()) {
             fn_block.extend(let_of_pat_and_expr(cx, span, pat, expr).into_iter());
         }
+        let mut fn_name = format!("{}_{}", base_name, e);
+        match codemap.span_to_lines(exprs_span).map(|lines| lines.lines.iter().map(|li| li.line_index).min()) {
+            Ok(Some(line)) => fn_name.extend(format!("_line_{}", line).chars()),
+            _ => (),
+        }
         fn_block.extend(block.iter().cloned());
-        let fn_name = format!("{}_{}", base_name, e);
         tokens.extend(test_fn_of_ident_and_block(cx, span, fn_name, fn_block).into_iter());
     }
     let mut parser = cx.new_parser_from_tts(&tokens[..]);
