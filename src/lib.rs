@@ -5,12 +5,12 @@ extern crate syntax;
 
 use std::rc::Rc;
 
+use syntax::ast::{Delimited, TokenTree, TtDelimited, TtToken};
 use syntax::codemap::Span;
 use syntax::diagnostic::FatalError;
-use syntax::parse::token;
-use syntax::ast::{Delimited, TokenTree, TtDelimited, TtToken};
-use syntax::ext::base::{ExtCtxt, MacResult, DummyResult, MacEager};
+use syntax::ext::base::{DummyResult, ExtCtxt, MacEager, MacResult};
 use syntax::ext::quote::rt::ToTokens;
+use syntax::parse::token;
 use syntax::util::small_vector::SmallVector;
 use rustc::plugin::Registry;
 
