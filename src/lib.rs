@@ -6,12 +6,52 @@ extern crate syntax;
 use std::rc::Rc;
 
 use syntax::codemap::Span;
-use syntax::parse::{PResult, token};
+use syntax::diagnostic::FatalError;
+use syntax::parse::token;
 use syntax::ast::{Delimited, TokenTree, TtDelimited, TtToken};
 use syntax::ext::base::{ExtCtxt, MacResult, DummyResult, MacEager};
 use syntax::ext::quote::rt::ToTokens;
 use syntax::util::small_vector::SmallVector;
 use rustc::plugin::Registry;
+
+
+macro_rules! fail {
+    ($expr:expr) => (
+        return Err(::std::convert::From::from($expr));
+    )
+}
+
+
+#[derive(PartialEq, Eq, Clone, Debug)]
+enum Error {
+    OverSpan(Span, String),
+    FatalParseError,
+}
+
+impl Error {
+    fn as_mac_result(self, cx: &mut ExtCtxt, whole_span: Span) -> Box<MacResult + 'static> {
+        let (span, message) = match self {
+            Error::OverSpan(span, message) => (span, message),
+            Error::FatalParseError => (whole_span, "fatal parse error".to_string()),
+        };
+        cx.span_err(span, message.as_str());
+        DummyResult::any(span)
+    }
+}
+
+impl From<(Span, &'static str)> for Error {
+    fn from((err_span, err_string): (Span, &'static str)) -> Error {
+        Error::OverSpan(err_span, err_string.to_string())
+    }
+}
+
+impl From<FatalError> for Error {
+    fn from(_: FatalError) -> Error {
+        Error::FatalParseError
+    }
+}
+
+type LocalResult<T> = Result<T, Error>;
 
 
 fn tt_vec(tts: &[TokenTree]) -> Vec<TokenTree> {
@@ -22,7 +62,7 @@ fn ident_of_ctx_and_span(cx: &mut ExtCtxt, span: Span, ident: &str) -> TokenTree
     TtToken(span, token::Ident(cx.ident_of(ident), token::Plain))
 }
 
-fn build_string_from_idents(target: &mut String, tts: &[TokenTree]) -> Result<(), Span> {
+fn build_string_from_idents(target: &mut String, tts: &[TokenTree]) -> LocalResult<()> {
     for t in tts {
         match t {
             &TtToken(_, token::Ident(ref i, _)) => {
@@ -31,71 +71,65 @@ fn build_string_from_idents(target: &mut String, tts: &[TokenTree]) -> Result<()
             &TtToken(_, token::Comma) => (),
             &TtDelimited(delim_span, ref delim) => {
                 if delim.delim != token::DelimToken::Bracket {
-                    return Err(delim_span);
+                    fail!((delim_span, "non-bracket delimiter"));
                 }
                 try!(build_string_from_idents(target, &delim.tts[..]));
             }
-            ref tt => return Err(tt.get_span()),
+            ref tt => fail!((tt.get_span(), "non-ident, non-comma token")),
         }
     }
     Ok(())
 }
 
-fn fnconcat(cx: &mut ExtCtxt, sp: Span, args: &[TokenTree])
-            -> Box<MacResult + 'static> {
+fn fnconcat_impl(cx: &mut ExtCtxt, sp: Span, args: &[TokenTree]) -> LocalResult<Box<MacResult + 'static>> {
     if args.is_empty() {
-        cx.span_err(sp, "fnconcat! can't be called with nothing");
-        return DummyResult::any(sp);
+        fail!((sp, "fnconcat! can't be called with nothing"));
     }
     let mut fn_tokens = tt_vec(args);
     fn_tokens[0] = if let &TtDelimited(delim_span, ref delim) = &fn_tokens[0] {
         if delim.delim != token::DelimToken::Bracket {
-            cx.span_err(delim_span, "use square brackets (i.e. [..]) in place of the function name");
-            return DummyResult::any(delim_span);
+            fail!((delim_span, "use square brackets (i.e. [..]) in place of the function name"));
         }
         let mut concatenated = String::new();
-        match build_string_from_idents(&mut concatenated, &delim.tts) {
-            Ok(()) => (),
-            Err(err_span) => {
-                cx.span_err(err_span, "non-ident, non-comma token");
-                return DummyResult::any(err_span);
-            },
-        }
+        try!(build_string_from_idents(&mut concatenated, &delim.tts));
         if concatenated.is_empty() {
-            cx.span_err(delim_span, "empty identifier");
-            return DummyResult::any(delim_span);
+            fail!((delim_span, "empty identifier"));
         }
         ident_of_ctx_and_span(cx, delim_span, concatenated.as_str())
     } else {
-        cx.span_err(sp, "use square brackets (i.e. [..]) in place of the function name");
-        return DummyResult::any(sp);
+        fail!((fn_tokens[0].get_span(), "use square brackets (i.e. [..]) in place of the function name"));
     };
     fn_tokens.insert(0, ident_of_ctx_and_span(cx, sp, "fn"));
     let mut p = cx.new_parser_from_tts(&fn_tokens[..]);
     if let Some(i) = p.parse_item() {
-        return MacEager::items(SmallVector::one(i));
+        return Ok(MacEager::items(SmallVector::one(i)));
     }
-    cx.span_err(sp, "couldn't parse a fn");
-    return DummyResult::any(sp);
+    fail!((sp, "couldn't parse a fn"));
+}
+
+fn fnconcat(cx: &mut ExtCtxt, sp: Span, args: &[TokenTree]) -> Box<MacResult + 'static> {
+    match fnconcat_impl(cx, sp, args) {
+        Ok(r) => r,
+        Err(e) => e.as_mac_result(cx, sp),
+    }
 }
 
 
-fn pull_tts_from_paren_groups(tts: &[TokenTree]) -> PResult<Vec<(Span, Vec<TokenTree>)>> {
+fn pull_tts_from_paren_groups(tts: &[TokenTree]) -> LocalResult<Vec<(Span, Vec<TokenTree>)>> {
     let mut ret = Vec::new();
     for t in tts {
         match t {
             &TtDelimited(delim_span, ref delim) if delim.delim == token::DelimToken::Paren => {
                 ret.push((delim_span, tt_vec(&delim.tts[..])));
             },
-            _ => {
-
-            },
+            &TtToken(_, token::Comma) => (),
+            ref tt => fail!((tt.get_span(), "parenthesized group expected")),
         }
     }
     Ok(ret)
 }
 
-fn parse_pats_and_types(cx: &mut ExtCtxt, span: Span, tts: Vec<TokenTree>) -> PResult<Vec<Vec<TokenTree>>> {
+fn parse_pats_and_types(cx: &mut ExtCtxt, span: Span, tts: Vec<TokenTree>) -> LocalResult<Vec<Vec<TokenTree>>> {
     let mut ret = Vec::new();
     let mut parser = cx.new_parser_from_tts(&tts[..]);
     loop {
@@ -113,7 +147,7 @@ fn parse_pats_and_types(cx: &mut ExtCtxt, span: Span, tts: Vec<TokenTree>) -> PR
     Ok(ret)
 }
 
-fn parse_exprs(cx: &mut ExtCtxt, tts: Vec<TokenTree>) -> PResult<Vec<Vec<TokenTree>>> {
+fn parse_exprs(cx: &mut ExtCtxt, tts: Vec<TokenTree>) -> LocalResult<Vec<Vec<TokenTree>>> {
     let mut ret = Vec::new();
     let mut parser = cx.new_parser_from_tts(&tts[..]);
     loop {
@@ -161,7 +195,7 @@ fn test_fn_of_ident_and_block(cx: &mut ExtCtxt, span: Span, ident: String, block
 }
 
 fn do_parametrization(cx: &mut ExtCtxt, span: Span, base_name: String, params: &Delimited, block: Vec<TokenTree>)
-                      -> PResult<Box<MacResult + 'static>> {
+                      -> LocalResult<Box<MacResult + 'static>> {
     let mut tokens = Vec::new();
     let mut groups = try!(pull_tts_from_paren_groups(&params.tts[..]));
     let param_types = try!(parse_pats_and_types(cx, span, groups.remove(0).1));
@@ -192,8 +226,7 @@ fn do_parametrization(cx: &mut ExtCtxt, span: Span, base_name: String, params: &
     Ok(MacEager::items(SmallVector::many(items)))
 }
 
-fn parametrize_test(cx: &mut ExtCtxt, sp: Span, args: &[TokenTree])
-                    -> Box<MacResult + 'static> {
+fn parametrize_test_impl(cx: &mut ExtCtxt, sp: Span, args: &[TokenTree]) -> LocalResult<Box<MacResult + 'static>> {
     match args {
         [ref name,
          TtToken(_, token::Comma),
@@ -201,42 +234,29 @@ fn parametrize_test(cx: &mut ExtCtxt, sp: Span, args: &[TokenTree])
          TtToken(_, token::Comma),
          TtDelimited(block_span, ref block)] => {
             if params.delim != token::DelimToken::Bracket {
-                cx.span_err(params_span, "need square brackets around parameters");
-                return DummyResult::any(params_span);
+                fail!((params_span, "need square brackets around parameters"));
             }
             if block.delim != token::DelimToken::Brace {
-                cx.span_err(block_span, "need curly braces around block");
-                return DummyResult::any(block_span);
+                fail!((block_span, "need curly braces around block"));
             }
             if params.tts.len() < 2 {
-                cx.span_err(params_span, "need at least param types and one param");
-                return DummyResult::any(params_span);
+                fail!((params_span, "need at least param types and one param"));
             }
             let mut concatenated = String::new();
-            match build_string_from_idents(&mut concatenated, &[name.clone()]) {
-                Ok(()) => (),
-                Err(err_span) => {
-                    cx.span_err(err_span, "non-ident, non-comma token");
-                    return DummyResult::any(err_span);
-                },
-            }
+            try!(build_string_from_idents(&mut concatenated, &[name.clone()]));
             if concatenated.is_empty() {
-                let name_span = name.get_span();
-                cx.span_err(name_span, "empty identifier");
-                return DummyResult::any(name_span);
+                fail!((name.get_span(), "empty identifier"));
             }
-            match do_parametrization(cx, sp, concatenated, params, block.tts.clone()) {
-                Ok(r) => return r,
-                Err(_) => {
-                    cx.span_err(sp, "error while parsing");
-                    return DummyResult::any(sp);
-                }
-            }
+            do_parametrization(cx, sp, concatenated, params, block.tts.clone())
         },
-        _ => {
-            cx.span_err(sp, "badly-structured parametrize_test!");
-            return DummyResult::any(sp);
-        }
+        _ => fail!((sp, "badly-structured parametrize_test!")),
+    }
+}
+
+fn parametrize_test(cx: &mut ExtCtxt, sp: Span, args: &[TokenTree]) -> Box<MacResult + 'static> {
+    match parametrize_test_impl(cx, sp, args) {
+        Ok(r) => r,
+        Err(e) => e.as_mac_result(cx, sp),
     }
 }
 
