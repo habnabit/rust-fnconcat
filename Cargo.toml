@@ -2,6 +2,11 @@
 name = "fnconcat"
 version = "0.1.0"
 authors = ["Aaron Gallagher <_@habnab.it>"]
+homepage = "https://github.com/habnabit/rust-fnconcat"
+repository = "https://github.com/habnabit/rust-fnconcat"
+
+description = "Specify function names by concatenating tokens."
+license = "ISC"
 
 [lib]
 name = "fnconcat"
