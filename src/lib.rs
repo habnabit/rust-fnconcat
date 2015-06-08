@@ -1,3 +1,8 @@
+/*
+ * Copyright (c) Aaron Gallagher <_@habnab.it>
+ * See COPYING for details.
+ */
+
 #![feature(plugin_registrar, rustc_private, convert, slice_patterns)]
 
 extern crate rustc;
