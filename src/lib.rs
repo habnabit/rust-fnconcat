@@ -3,7 +3,7 @@
  * See COPYING for details.
  */
 
-#![feature(plugin_registrar, rustc_private, convert, slice_patterns)]
+#![feature(plugin_registrar, rustc_private, convert, slice_patterns, advanced_slice_patterns)]
 
 extern crate rustc;
 extern crate syntax;
@@ -86,12 +86,29 @@ fn build_string_from_idents(target: &mut String, tts: &[TokenTree]) -> LocalResu
     Ok(())
 }
 
+fn find_first_nonattribute_token(mut tokens: &[TokenTree]) -> usize {
+    let mut ret = 0;
+    loop {
+        match tokens {
+            [TtToken(_, token::Pound),
+             TtDelimited(_, ref delim),
+             rest..] if delim.delim == token::DelimToken::Bracket => {
+                tokens = rest;
+                ret += 2;
+            },
+            _ => break,
+        }
+    }
+    ret
+}
+
 fn fnconcat_impl(cx: &mut ExtCtxt, sp: Span, args: &[TokenTree]) -> LocalResult<Box<MacResult + 'static>> {
-    if args.is_empty() {
+    let ident_token_pos = find_first_nonattribute_token(args);
+    if ident_token_pos >= args.len() {
         fail!((sp, "fnconcat! can't be called with nothing"));
     }
     let mut fn_tokens = tt_vec(args);
-    fn_tokens[0] = if let &TtDelimited(delim_span, ref delim) = &fn_tokens[0] {
+    fn_tokens[ident_token_pos] = if let &TtDelimited(delim_span, ref delim) = &fn_tokens[ident_token_pos] {
         if delim.delim != token::DelimToken::Bracket {
             fail!((delim_span, "use square brackets (i.e. [..]) in place of the function name"));
         }
@@ -102,9 +119,10 @@ fn fnconcat_impl(cx: &mut ExtCtxt, sp: Span, args: &[TokenTree]) -> LocalResult<
         }
         ident_of_ctx_and_span(cx, delim_span, concatenated.as_str())
     } else {
-        fail!((fn_tokens[0].get_span(), "use square brackets (i.e. [..]) in place of the function name"));
+        fail!((fn_tokens[ident_token_pos].get_span(),
+               "use square brackets (i.e. [..]) in place of the function name"));
     };
-    fn_tokens.insert(0, ident_of_ctx_and_span(cx, sp, "fn"));
+    fn_tokens.insert(ident_token_pos, ident_of_ctx_and_span(cx, sp, "fn"));
     let mut p = cx.new_parser_from_tts(&fn_tokens[..]);
     if let Some(i) = p.parse_item() {
         return Ok(MacEager::items(SmallVector::one(i)));

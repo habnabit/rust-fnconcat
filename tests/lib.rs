@@ -73,8 +73,7 @@ fn test_ident_built_partially_from_macro() {
 }
 
 
-#[test]
-fnconcat!{[test_, annotations]() {
+fnconcat!{#[test] [test_, annotations]() {
 
 }}
 
