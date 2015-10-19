@@ -71,7 +71,7 @@ fn build_string_from_idents(target: &mut String, tts: &[TokenTree]) -> LocalResu
     for t in tts {
         match t {
             &TtToken(_, token::Ident(ref i, _)) => {
-                target.extend(i.as_str().chars());
+                target.extend(i.name.as_str().chars());
             },
             &TtToken(_, token::Comma) => (),
             &TtDelimited(delim_span, ref delim) => {
