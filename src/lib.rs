@@ -3,21 +3,21 @@
  * See COPYING for details.
  */
 
-#![feature(plugin_registrar, rustc_private, convert, slice_patterns, advanced_slice_patterns)]
+#![feature(plugin_registrar, rustc_private, slice_patterns, advanced_slice_patterns)]
 
-extern crate rustc;
+extern crate rustc_plugin;
 extern crate syntax;
 
 use std::rc::Rc;
 
-use syntax::ast::{Delimited, TokenTree, TtDelimited, TtToken};
+use syntax::ast::{Delimited, TokenTree};
 use syntax::codemap::Span;
-use syntax::diagnostic::FatalError;
+use syntax::errors::{DiagnosticBuilder, FatalError};
 use syntax::ext::base::{DummyResult, ExtCtxt, MacEager, MacResult};
 use syntax::ext::quote::rt::ToTokens;
 use syntax::parse::token;
 use syntax::util::small_vector::SmallVector;
-use rustc::plugin::Registry;
+use rustc_plugin::Registry;
 
 
 macro_rules! fail {
@@ -56,6 +56,13 @@ impl From<FatalError> for Error {
     }
 }
 
+impl<'a> From<DiagnosticBuilder<'a>> for Error {
+    fn from(mut b: DiagnosticBuilder<'a>) -> Error {
+        b.emit();
+        Error::FatalParseError
+    }
+}
+
 type LocalResult<T> = Result<T, Error>;
 
 
@@ -64,17 +71,17 @@ fn tt_vec(tts: &[TokenTree]) -> Vec<TokenTree> {
 }
 
 fn ident_of_ctx_and_span(cx: &mut ExtCtxt, span: Span, ident: &str) -> TokenTree {
-    TtToken(span, token::Ident(cx.ident_of(ident), token::Plain))
+    TokenTree::Token(span, token::Ident(cx.ident_of(ident), token::Plain))
 }
 
 fn build_string_from_idents(target: &mut String, tts: &[TokenTree]) -> LocalResult<()> {
     for t in tts {
         match t {
-            &TtToken(_, token::Ident(ref i, _)) => {
+            &TokenTree::Token(_, token::Ident(ref i, _)) => {
                 target.extend(i.name.as_str().chars());
             },
-            &TtToken(_, token::Comma) => (),
-            &TtDelimited(delim_span, ref delim) => {
+            &TokenTree::Token(_, token::Comma) => (),
+            &TokenTree::Delimited(delim_span, ref delim) => {
                 if delim.delim != token::DelimToken::Bracket {
                     fail!((delim_span, "non-bracket delimiter"));
                 }
@@ -90,8 +97,8 @@ fn find_first_nonattribute_token(mut tokens: &[TokenTree]) -> usize {
     let mut ret = 0;
     loop {
         match tokens {
-            [TtToken(_, token::Pound),
-             TtDelimited(_, ref delim),
+            [TokenTree::Token(_, token::Pound),
+             TokenTree::Delimited(_, ref delim),
              rest..] if delim.delim == token::DelimToken::Bracket => {
                 tokens = rest;
                 ret += 2;
@@ -108,7 +115,7 @@ fn fnconcat_impl(cx: &mut ExtCtxt, sp: Span, args: &[TokenTree]) -> LocalResult<
         fail!((sp, "fnconcat! can't be called with nothing"));
     }
     let mut fn_tokens = tt_vec(args);
-    fn_tokens[ident_token_pos] = if let &TtDelimited(delim_span, ref delim) = &fn_tokens[ident_token_pos] {
+    fn_tokens[ident_token_pos] = if let &TokenTree::Delimited(delim_span, ref delim) = &fn_tokens[ident_token_pos] {
         if delim.delim != token::DelimToken::Bracket {
             fail!((delim_span, "use square brackets (i.e. [..]) in place of the function name"));
         }
@@ -124,7 +131,7 @@ fn fnconcat_impl(cx: &mut ExtCtxt, sp: Span, args: &[TokenTree]) -> LocalResult<
     };
     fn_tokens.insert(ident_token_pos, ident_of_ctx_and_span(cx, sp, "fn"));
     let mut p = cx.new_parser_from_tts(&fn_tokens[..]);
-    if let Some(i) = p.parse_item() {
+    if let Some(i) = try!(p.parse_item()) {
         return Ok(MacEager::items(SmallVector::one(i)));
     }
     fail!((sp, "couldn't parse a fn"));
@@ -142,10 +149,10 @@ fn pull_tts_from_paren_groups(tts: &[TokenTree]) -> LocalResult<Vec<(Span, Vec<T
     let mut ret = Vec::new();
     for t in tts {
         match t {
-            &TtDelimited(delim_span, ref delim) if delim.delim == token::DelimToken::Paren => {
+            &TokenTree::Delimited(delim_span, ref delim) if delim.delim == token::DelimToken::Paren => {
                 ret.push((delim_span, tt_vec(&delim.tts[..])));
             },
-            &TtToken(_, token::Comma) => (),
+            &TokenTree::Token(_, token::Comma) => (),
             ref tt => fail!((tt.get_span(), "parenthesized group expected")),
         }
     }
@@ -156,14 +163,14 @@ fn parse_pats_and_types(cx: &mut ExtCtxt, span: Span, tts: Vec<TokenTree>) -> Lo
     let mut ret = Vec::new();
     let mut parser = cx.new_parser_from_tts(&tts[..]);
     loop {
-        let pat = try!(parser.parse_pat_nopanic());
+        let pat = try!(parser.parse_pat());
         try!(parser.expect(&token::Colon));
-        let ty = try!(parser.parse_ty_nopanic());
+        let ty = try!(parser.parse_ty());
         let mut pat = pat.to_tokens(cx);
-        pat.push(TtToken(span, token::Colon));
+        pat.push(TokenTree::Token(span, token::Colon));
         pat.extend(ty.to_tokens(cx).into_iter());
         ret.push(pat);
-        if !try!(parser.eat(&token::Comma)) {
+        if !parser.eat(&token::Comma) {
             break;
         }
     }
@@ -174,8 +181,8 @@ fn parse_exprs(cx: &mut ExtCtxt, tts: Vec<TokenTree>) -> LocalResult<Vec<Vec<Tok
     let mut ret = Vec::new();
     let mut parser = cx.new_parser_from_tts(&tts[..]);
     loop {
-        ret.push(try!(parser.parse_expr_nopanic()).to_tokens(cx));
-        if !try!(parser.eat(&token::Comma)) {
+        ret.push(try!(parser.parse_expr()).to_tokens(cx));
+        if !parser.eat(&token::Comma) {
             break;
         }
     }
@@ -185,16 +192,16 @@ fn parse_exprs(cx: &mut ExtCtxt, tts: Vec<TokenTree>) -> LocalResult<Vec<Vec<Tok
 fn let_of_pat_and_expr(cx: &mut ExtCtxt, span: Span, pat: Vec<TokenTree>, expr: Vec<TokenTree>) -> Vec<TokenTree> {
     let mut ret = vec![ident_of_ctx_and_span(cx, span, "let")];
     ret.extend(pat.into_iter());
-    ret.push(TtToken(span, token::Eq));
+    ret.push(TokenTree::Token(span, token::Eq));
     ret.extend(expr.into_iter());
-    ret.push(TtToken(span, token::Semi));
+    ret.push(TokenTree::Token(span, token::Semi));
     ret
 }
 
 fn test_fn_of_ident_and_block(cx: &mut ExtCtxt, span: Span, ident: String, block: Vec<TokenTree>) -> Vec<TokenTree> {
     vec![
-        TtToken(span, token::Pound),
-        TtDelimited(span, Rc::new(Delimited {
+        TokenTree::Token(span, token::Pound),
+        TokenTree::Delimited(span, Rc::new(Delimited {
             delim: token::Bracket,
             open_span: span,
             tts: vec![ident_of_ctx_and_span(cx, span, "test")],
@@ -202,13 +209,13 @@ fn test_fn_of_ident_and_block(cx: &mut ExtCtxt, span: Span, ident: String, block
         })),
         ident_of_ctx_and_span(cx, span, "fn"),
         ident_of_ctx_and_span(cx, span, ident.as_str()),
-        TtDelimited(span, Rc::new(Delimited {
+        TokenTree::Delimited(span, Rc::new(Delimited {
             delim: token::Paren,
             open_span: span,
             tts: Vec::new(),
             close_span: span,
         })),
-        TtDelimited(span, Rc::new(Delimited {
+        TokenTree::Delimited(span, Rc::new(Delimited {
             delim: token::Brace,
             open_span: span,
             tts: block,
@@ -241,7 +248,7 @@ fn do_parametrization(cx: &mut ExtCtxt, span: Span, base_name: String, params: &
     let mut parser = cx.new_parser_from_tts(&tokens[..]);
     let mut items = Vec::new();
     loop {
-        match parser.parse_item() {
+        match try!(parser.parse_item()) {
             Some(i) => items.push(i),
             None => break,
         }
@@ -252,10 +259,10 @@ fn do_parametrization(cx: &mut ExtCtxt, span: Span, base_name: String, params: &
 fn parametrize_test_impl(cx: &mut ExtCtxt, sp: Span, args: &[TokenTree]) -> LocalResult<Box<MacResult + 'static>> {
     match args {
         [ref name,
-         TtToken(_, token::Comma),
-         TtDelimited(params_span, ref params),
-         TtToken(_, token::Comma),
-         TtDelimited(block_span, ref block)] => {
+         TokenTree::Token(_, token::Comma),
+         TokenTree::Delimited(params_span, ref params),
+         TokenTree::Token(_, token::Comma),
+         TokenTree::Delimited(block_span, ref block)] => {
             if params.delim != token::DelimToken::Bracket {
                 fail!((params_span, "need square brackets around parameters"));
             }
